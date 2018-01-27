@@ -55,6 +55,8 @@ def download_and_play(player_list):
         subprocess.Popen(
             [
                 "youtube-dl",
+                # .webm partial files won't have audio.  So we force .mp4.
+                "-f", "22/17/18",
                 "-o", fname,
                 "--no-part",
                 v
@@ -63,14 +65,16 @@ def download_and_play(player_list):
             stderr=subprocess.DEVNULL
         )
 
-        # TODO: Wait for a given file size instead.
-        print("Download started.  Sleeping configured amount.")
-        time.sleep(config["player-delay"])
-
         # If we run on cygwin, there's no guarantee the external player
         # will understand the cygwin root directory.  Go there directly.
         os.chdir(os.path.dirname(fname))
-        fname = os.path.basename(fname)
+
+        while not os.path.isfile(fname):
+            time.sleep(1)
+
+        # TODO: Wait for a given file size instead.
+        print("Download started.  Sleeping configured amount.")
+        time.sleep(config["player-delay"])
 
         subprocess.check_call([
             config["player-cmd"],
