@@ -7,17 +7,45 @@ import tempfile
 import subprocess
 import cmd
 import json
+import pytz
+import datetime
+import dateutil.parser
+import dateutil.relativedelta
+
 import feedparser
+
 
 YOUTUBE_FEED = "https://www.youtube.com/feeds"
 with open("{}/.yt-feed.json".format(os.getenv("HOME"))) as f:
     config = json.load(f)
+
+
+def reltime_str(then, now):
+    rel = dateutil.relativedelta.relativedelta(now, then)
+    rel_list = [
+        "{}y".format(rel.years),
+        "{}m".format(rel.months),
+        "{}d".format(rel.days),
+        "{}h".format(rel.hours),
+        "{}m".format(rel.minutes),
+        "{}s".format(rel.seconds),
+        "",
+    ]
+
+    for (i, rli) in enumerate(rel_list):
+        if rli.startswith("0"):
+            continue
+        if rli == 0:
+            return "0"
+
+        return rli + rel_list[i+1]
 
 class YTFShell(cmd.Cmd):
     def __init__(self):
         cmd.Cmd.__init__(self)
         self.prompt = "> "
         self.list_data = dict()
+        self.now = datetime.datetime.now(pytz.utc)
 
     def do_list(self, arg):
         for c in config["channels"]:
@@ -30,7 +58,11 @@ class YTFShell(cmd.Cmd):
             print(c["name"])
             for (i, e) in enumerate(f.entries[:10]):
                 self.list_data["{}{}".format(c["key"], i)] = e
-                print("\t{}{}: {}".format(c["key"], i, e.title))
+                print("\t{}{}[{:>8}] {}".format(
+                    c["key"], i,
+                    reltime_str(dateutil.parser.parse(e.published), self.now),
+                    e.title
+                ))
 
     def do_play(self, arg):
         if not self.list_data:
