@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pylint: disable=fixme,invalid-name,missing-docstring
 
 import os
 import sys
@@ -7,17 +8,20 @@ import tempfile
 import subprocess
 import cmd
 import json
-import pytz
 import datetime
+
 import dateutil.parser
 import dateutil.relativedelta
-
+import pytz
+import requests
 import feedparser
 
 
 YOUTUBE_FEED = "https://www.youtube.com/feeds"
-with open("{}/.yt-feed.json".format(os.getenv("HOME"))) as f:
-    config = json.load(f)
+YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
+
+with open("{}/.yt-feed.json".format(os.getenv("HOME"))) as config_fd:
+    config = json.load(config_fd)
 
 
 def reltime_str(then, now):
@@ -40,19 +44,55 @@ def reltime_str(then, now):
 
         return rli + rel_list[i+1]
 
+def download_and_play(player_list):
+    for (i, v) in enumerate(player_list):
+        print("Processing video {}/{}".format(i+1, len(player_list)))
+
+        (fd, fname) = tempfile.mkstemp(prefix="ytf-")
+        os.close(fd)
+        os.remove(fname)
+
+        subprocess.Popen(
+            [
+                "youtube-dl",
+                "-o", fname,
+                "--no-part",
+                v
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        # TODO: Wait for a given file size instead.
+        print("Download started.  Sleeping configured amount.")
+        time.sleep(config["player-delay"])
+
+        # If we run on cygwin, there's no guarantee the external player
+        # will understand the cygwin root directory.  Go there directly.
+        os.chdir(os.path.dirname(fname))
+        fname = os.path.basename(fname)
+
+        subprocess.check_call([
+            config["player-cmd"],
+            fname
+        ] + config.get("player-opts", []))
+
+        os.remove(fname)
+
+
 class YTFShell(cmd.Cmd):
     def __init__(self):
         cmd.Cmd.__init__(self)
         self.prompt = "> "
         self.list_data = dict()
+        self.plist_data = dict()
         self.now = datetime.datetime.now(pytz.utc)
 
-    def do_list(self, arg):
+    def do_list(self, _):
         for c in config["channels"]:
-            channel_id = c["channel-id"]
             f = feedparser.parse("{burl}/videos.xml?channel_id={cid}".format(
                 burl=YOUTUBE_FEED,
-                cid=channel_id
+                cid=c["channel-id"]
             ))
 
             print(c["name"])
@@ -64,47 +104,80 @@ class YTFShell(cmd.Cmd):
                     e.title
                 ))
 
+    def do_plist(self, _):
+        if not "youtube-api-key" in config:
+            print("Configure a youtube-api-key to get playlists working")
+
+        for c in config["channels"]:
+            r = requests.get(
+                "{}/playlists".format(YOUTUBE_API),
+                params={
+                    "part": "snippet,contentDetails",
+                    "channelId": c["channel-id"],
+                    "key": config["youtube-api-key"],
+                }
+            )
+
+            print(c["name"])
+            for (i, e) in enumerate(r.json()["items"]):
+                published = e["snippet"]["publishedAt"]
+                print("\t{}{}[{:>8}] {}".format(
+                    c["key"], i,
+                    reltime_str(dateutil.parser.parse(published), self.now),
+                    e["snippet"]["title"]
+                ))
+
+                r = requests.get(
+                    "{}/playlistItems".format(YOUTUBE_API),
+                    params={
+                        "part": "contentDetails",
+                        "playlistId": e["id"],
+                        # TODO: No paging supported, playlists with more than
+                        #       25 results will not show all videos.
+                        "maxResults": 25,
+                        "key": config["youtube-api-key"],
+                    }
+                )
+
+                self.plist_data["{}{}".format(c["key"], i)] = r.json()
+
     def do_play(self, arg):
         if not self.list_data:
             print("Run list command first")
             return
 
+        player_list = []
         for token in arg.split():
-            (fd, fname) = tempfile.mkstemp(prefix="ytf-")
-            os.close(fd)
-            os.remove(fname)
-
             if token not in self.list_data:
                 print("Can't parse video handle:[{}]".format(token))
 
-            subprocess.Popen(
-                [
-                    "youtube-dl",
-                    "-o", fname,
-                    "--no-part",
-                    self.list_data[token].link
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            player_list.append(self.list_data[token].link)
 
-            print("Download started.  Sleeping configured amount.")
-            time.sleep(config["player-delay"])
+        download_and_play(player_list)
 
-            # If we run on cygwin, there's no guarantee the external player
-            # will understand the cygwin root directory.  Go there directly.
-            os.chdir(os.path.dirname(fname))
-            fname = os.path.basename(fname)
+    def do_pplay(self, arg):
+        if not self.plist_data:
+            print("Run plist command first")
+            return
 
-            subprocess.check_call([
-                config["player-cmd"],
-                fname
-            ] + config.get("player-opts", []))
+        token = arg
+        if token not in self.plist_data:
+            print("Can't parse playlist handle:[{}]".format(token))
 
-            os.remove(fname)
+        player_list = []
+        for i in self.plist_data[token]["items"]:
+            player_list.append("https://www.youtube.com/watch?v={}".format(
+                i["contentDetails"]["videoId"]
+            ))
+
+        download_and_play(player_list)
+
+    def do_quit(self, _):
+        # pylint: disable=no-self-use
+        sys.exit(0)
 
     def do_EOF(self, arg):
-        sys.exit(0)
+        self.do_quit(arg)
 
 if __name__ == "__main__":
     YTFShell().cmdloop()
